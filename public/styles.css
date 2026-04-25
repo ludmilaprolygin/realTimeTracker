@@ -1,0 +1,47 @@
+:root {
+  --bg: #f3f5f8;
+  --ink: #1b2430;
+  --muted: #4f5b6a;
+  --panel: #ffffff;
+  --line: #d9dee7;
+  --accent: #0b6cfb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 10% 10%, #ffffff 0, #f8fafc 35%, #f1f4f8 80%),
+    var(--bg);
+}
+
+.layout {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.map-wrap {
+  position: relative;
+  height: 100%;
+}
+
+#map {
+  height: 100%;
+  width: 100%;
+}
+
+@media (max-width: 860px) {
+  #map {
+    height: 100%;
+  }
+}

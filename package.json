@@ -1,0 +1,21 @@
+{
+  "name": "real-time-shipping",
+  "version": "1.0.0",
+  "description": "Realtime tracking demo with Node, Socket.IO and Leaflet",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "leaflet",
+    "socket.io",
+    "tracking",
+    "realtime"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.8.1"
+  }
+}
