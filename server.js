@@ -34,50 +34,157 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true, ts: new Date().toISOString() });
 });
 
-// Route around Bahia Blanca (UNS area) to simulate a moving truck.
-const route = [
-  [-38.6893, -62.2698],
-  [-38.6890, -62.2688],
-  [-38.6886, -62.2679],
-  [-38.6882, -62.2670],
-  [-38.6878, -62.2661],
-  [-38.6874, -62.2652],
-  [-38.6871, -62.2643],
-  [-38.6873, -62.2635],
-  [-38.6878, -62.2629],
-  [-38.6884, -62.2627],
-  [-38.6890, -62.2629],
-  [-38.6895, -62.2634],
-  [-38.6899, -62.2641],
-  [-38.6902, -62.2650],
-  [-38.6904, -62.2659],
-  [-38.6904, -62.2669],
-  [-38.6902, -62.2678],
-  [-38.6899, -62.2686],
-  [-38.6896, -62.2693]
-];
+app.get("/api/docs", (_req, res) => {
+  res.json({
+    name: "Real-time Tracking API",
+    version: "1.0.0",
+    baseUrl: "http://localhost:3000",
+    description: "Microservice for real-time package tracking with WebSocket support",
+    endpoints: [
+      {
+        path: "/",
+        method: "GET",
+        description: "Web UI for tracking visualization",
+        params: {
+          shipmentId: {
+            type: "string",
+            required: false,
+            default: "SHIP-001",
+            example: "SHIP-001"
+          },
+          mode: {
+            type: "string",
+            required: false,
+            default: "viewer",
+            values: ["viewer", "driver"],
+            description: "viewer = read-only tracking, driver = share GPS location"
+          }
+        },
+        examples: [
+          "http://localhost:3000/?shipmentId=SHIP-001&mode=viewer",
+          "http://localhost:3000/?shipmentId=SHIP-001&mode=driver"
+        ]
+      },
+      {
+        path: "/health",
+        method: "GET",
+        description: "Check service status",
+        response: { ok: true, ts: "2026-04-25T17:40:00.000Z" }
+      },
+      {
+        path: "/api/docs",
+        method: "GET",
+        description: "Get API specification (this endpoint)"
+      },
+      {
+        path: "/api/tracking/update",
+        method: "POST",
+        description: "Publish courier location update",
+        authentication: "Optional API key via x-tracking-key header if TRACKING_API_KEY env var is set",
+        headers: {
+          "Content-Type": "application/json",
+          "x-tracking-key": "(optional) Your API key if required"
+        },
+        body: {
+          shipmentId: {
+            type: "string",
+            required: true,
+            example: "SHIP-001"
+          },
+          lat: {
+            type: "number",
+            required: true,
+            example: -38.6893
+          },
+          lng: {
+            type: "number",
+            required: true,
+            example: -62.2698
+          },
+          accuracy: {
+            type: "number",
+            required: false,
+            example: 12,
+            description: "GPS accuracy in meters"
+          },
+          speedKmh: {
+            type: "number",
+            required: false,
+            example: 24.5
+          },
+          timestamp: {
+            type: "string",
+            required: false,
+            format: "ISO 8601",
+            example: "2026-04-25T17:40:00.000Z"
+          }
+        },
+        response: { ok: true }
+      },
+      {
+        path: "/api/tracking/:shipmentId/latest",
+        method: "GET",
+        description: "Get last known position for a shipment",
+        params: {
+          shipmentId: {
+            type: "string",
+            required: true,
+            example: "SHIP-001"
+          }
+        },
+        response: {
+          ok: true,
+          data: {
+            shipmentId: "SHIP-001",
+            lat: -38.6893,
+            lng: -62.2698,
+            accuracy: 12,
+            speedKmh: 24.5,
+            timestamp: "2026-04-25T17:40:00.000Z"
+          }
+        }
+      },
+      {
+        path: "/api/tracking/:shipmentId",
+        method: "DELETE",
+        description: "Remove shipment tracking data (cleanup after delivery)",
+        params: {
+          shipmentId: {
+            type: "string",
+            required: true,
+            example: "SHIP-001"
+          }
+        },
+        response: { ok: true, deleted: true }
+      }
+    ],
+    websocket: {
+      description: "Real-time tracking via Socket.IO",
+      url: "ws://localhost:3000",
+      query: {
+        shipmentId: "string (default: SHIP-001)",
+        mode: "string (default: viewer)"
+      },
+      events: {
+        connect: "Client connects to tracking channel for shipmentId",
+        "tracking:update": "Broadcasted when new location is published",
+        "tracking:driver": "(driver mode) Emit GPS coordinates from browser"
+      }
+    },
+    environment: {
+      PORT: "Server port (default: 3000)",
+      TRACKING_API_KEY: "(optional) Require API key for /api/tracking/update POST"
+    }
+  });
+});
 
-let routeIndex = 0;
 const ROOM_PREFIX = "shipment:";
 const trackedShipments = new Map();
 
-function randomSpeedKmH() {
-  return Math.round((28 + Math.random() * 22) * 10) / 10;
-}
-
-function simulatedTrackingPayload(shipmentId = "SHIP-001") {
-  const [lat, lng] = route[routeIndex];
-  return {
-    shipmentId,
-    lat,
-    lng,
-    speedKmh: randomSpeedKmH(),
-    timestamp: new Date().toISOString()
-  };
-}
+// Note: No default data. Shipments are created only via POST /api/tracking/update
 
 function publishTrackingUpdate(payload) {
-  const shipmentId = String(payload.shipmentId || "SHIP-001");
+  const shipmentId = String(payload.shipmentId || "");
   const room = `${ROOM_PREFIX}${shipmentId}`;
 
   trackedShipments.set(shipmentId, payload);
@@ -136,14 +243,34 @@ app.get("/api/tracking/:shipmentId/latest", (req, res) => {
   return res.json({ ok: true, data: latest });
 });
 
+app.delete("/api/tracking/:shipmentId", (req, res) => {
+  const shipmentId = String(req.params.shipmentId || "");
+  if (!shipmentId) {
+    return res.status(400).json({ ok: false, error: "shipmentId is required" });
+  }
+
+  const existed = trackedShipments.has(shipmentId);
+  trackedShipments.delete(shipmentId);
+
+  return res.json({ ok: true, deleted: existed });
+});
+
 io.on("connection", (socket) => {
-  const shipmentId = String(socket.handshake.query.shipmentId || "SHIP-001");
+  const shipmentId = String(socket.handshake.query.shipmentId || "");
   const room = `${ROOM_PREFIX}${shipmentId}`;
+
+  if (!shipmentId) {
+    socket.emit("error", { message: "shipmentId query parameter is required" });
+    socket.disconnect();
+    return;
+  }
 
   socket.join(room);
 
   const lastKnown = trackedShipments.get(shipmentId);
-  socket.emit("tracking:update", lastKnown || simulatedTrackingPayload(shipmentId));
+  if (lastKnown) {
+    socket.emit("tracking:update", lastKnown);
+  }
 
   socket.on("tracking:driver", ({ lat, lng, accuracy, speedKmh }) => {
     if (typeof lat !== "number" || typeof lng !== "number") {
@@ -163,14 +290,7 @@ io.on("connection", (socket) => {
   });
 });
 
-setInterval(() => {
-  routeIndex = (routeIndex + 1) % route.length;
-
-  // Demo fallback only for SHIP-001 when no driver GPS is being shared.
-  if (!trackedShipments.has("SHIP-001")) {
-    io.to(`${ROOM_PREFIX}SHIP-001`).emit("tracking:update", simulatedTrackingPayload("SHIP-001"));
-  }
-}, 1000);
+// Stateless: no automatic simulation. Updates only via external POST /api/tracking/update
 
 server.listen(PORT, () => {
   console.log(`Realtime tracking server listening on http://localhost:${PORT}`);
