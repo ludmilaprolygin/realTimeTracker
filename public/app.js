@@ -1,41 +1,60 @@
 const DRIVER_UPDATE_INTERVAL_MS = 20000;
 
+const DEFAULT_DESTINATION = {
+  lat: -38.6893,
+  lng: -62.2698
+};
+
+const params = new URLSearchParams(window.location.search);
+const shipmentId = params.get("shipmentId");
+const mode = params.get("mode") === "driver" ? "driver" : "viewer";
+
+const destinationLatParam = Number(params.get("destinationLat"));
+const destinationLngParam = Number(params.get("destinationLng"));
+const destination = {
+  lat: Number.isFinite(destinationLatParam) ? destinationLatParam : DEFAULT_DESTINATION.lat,
+  lng: Number.isFinite(destinationLngParam) ? destinationLngParam : DEFAULT_DESTINATION.lng
+};
+
 const map = L.map("map", {
   zoomControl: true,
   minZoom: 5
-}).setView([-38.6893, -62.2698], 14);
+}).setView([destination.lat, destination.lng], 14);
 
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 }).addTo(map);
 
-const trackingIcon = L.icon({
-  iconUrl: "./assets/tracking-icon.png",
-  iconSize: [24, 24],
-  iconAnchor: [16, 16],
-  popupAnchor: [0, -16]
-});
-
-const viewerIcon = L.icon({
+const destinationIcon = L.icon({
   iconUrl: "./assets/pin.png?v=1",
   iconSize: [24, 24],
   iconAnchor: [11, 11],
   popupAnchor: [0, -11]
 });
 
-let marker = null;
-let viewerMarker = null;
+const riderSelfIcon = L.icon({
+  iconUrl: "./assets/tracking-icon.png",
+  iconSize: [24, 24],
+  iconAnchor: [16, 16],
+  popupAnchor: [0, -16]
+});
+
+const viewerSelfIcon = L.icon({
+  iconUrl: "./assets/hombre.png",
+  iconSize: [24, 24],
+  iconAnchor: [12, 20],
+  popupAnchor: [0, -18]
+});
+
+let destinationMarker = null;
+let selfLocationMarker = null;
+let riderTrackingMarker = null;
 let socket = null;
-let hasCenteredOnTracking = false;
 let hasUserInteractedWithMap = false;
 let lastDriverEmitAt = 0;
 let latestDriverCoords = null;
 let driverIntervalId = null;
-
-const params = new URLSearchParams(window.location.search);
-const shipmentId = params.get("shipmentId");
-const mode = params.get("mode") === "driver" ? "driver" : "viewer";
 
 const shipmentValue = document.getElementById("shipment-value");
 const trackingStatus = document.getElementById("tracking-status");
@@ -84,6 +103,25 @@ function clearAnyTrailLayer() {
       map.removeLayer(layer);
     }
   });
+}
+
+function initializeDestinationMarker() {
+  destinationMarker = L.marker([destination.lat, destination.lng], { icon: destinationIcon }).addTo(map);
+  destinationMarker.bindPopup(`Destino del paquete ${shipmentId || "SIN-ID"}`);
+}
+
+function upsertRiderTrackingMarker(lat, lng) {
+  if (mode !== "viewer") {
+    return;
+  }
+
+  if (!riderTrackingMarker) {
+    riderTrackingMarker = L.marker([lat, lng], { icon: riderSelfIcon }).addTo(map);
+    riderTrackingMarker.bindTooltip("Ubicacion del rider", { permanent: false });
+    return;
+  }
+
+  riderTrackingMarker.setLatLng([lat, lng]);
 }
 
 function updateTrackingPanel(payload, customStatus) {
@@ -139,9 +177,21 @@ function stopDriverInterval() {
 }
 
 function initializeTracking() {
-  updateTrackingPanel(null);
+  updateTrackingPanel(
+    {
+      lat: destination.lat,
+      lng: destination.lng,
+      timestamp: new Date().toISOString()
+    },
+    "Mostrando destino del paquete"
+  );
 
-  viewerMarker = L.marker([-38.6893, -62.2698], { icon: viewerIcon }).addTo(map);
+  initializeDestinationMarker();
+
+  const selfIcon = mode === "viewer" ? viewerSelfIcon : riderSelfIcon;
+  selfLocationMarker = L.marker([destination.lat, destination.lng], { icon: selfIcon }).addTo(map);
+  const selfLabel = mode === "driver" ? "Tu ubicacion actual (rider)" : "Tu ubicacion actual (viewer)";
+  selfLocationMarker.bindTooltip(selfLabel, { permanent: false });
 
   if (!navigator.geolocation) {
     console.warn("Geolocation API is not available in this browser");
@@ -152,12 +202,13 @@ function initializeTracking() {
     (position) => {
       const { latitude, longitude, accuracy, speed } = position.coords;
 
-      if (viewerMarker) {
-        viewerMarker.setLatLng([latitude, longitude]);
-        viewerMarker.bindTooltip("Tu ubicacion", { permanent: false });
+      if (selfLocationMarker) {
+        selfLocationMarker.setLatLng([latitude, longitude]);
       }
 
-      centerMapIfAllowed(latitude, longitude);
+      if (mode === "driver") {
+        centerMapIfAllowed(latitude, longitude);
+      }
 
       latestDriverCoords = {
         lat: latitude,
@@ -198,20 +249,13 @@ function setupSocketListeners() {
     const { shipmentId: currentShipmentId, lat, lng, speedKmh, accuracy, timestamp } = payload;
 
     clearAnyTrailLayer();
+    upsertRiderTrackingMarker(lat, lng);
 
-    if (!marker) {
-      marker = L.marker([lat, lng], { icon: trackingIcon }).addTo(map);
-    }
-
-    marker.setLatLng([lat, lng]);
-    marker.bindPopup(`Shipment ${currentShipmentId}`).openPopup();
-
-    if (!hasCenteredOnTracking) {
-      centerMapIfAllowed(lat, lng);
-      hasCenteredOnTracking = true;
-    }
-
-    updateTrackingPanel({ lat, lng, timestamp });
+    // Keep map pin fixed at destination; realtime updates are reflected in status only.
+    updateTrackingPanel(
+      { lat: destination.lat, lng: destination.lng, timestamp },
+      `Destino fijo. Ultima senal del rider: ${lat.toFixed(5)}, ${lng.toFixed(5)}`
+    );
 
     if (typeof speedKmh === "number") {
       console.log(`Tracking ${currentShipmentId}: ${speedKmh} km/h at ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
@@ -226,13 +270,19 @@ function setupSocketListeners() {
       return;
     }
 
-    if (marker) {
-      map.removeLayer(marker);
-      marker = null;
+    if (riderTrackingMarker) {
+      map.removeLayer(riderTrackingMarker);
+      riderTrackingMarker = null;
     }
 
-    hasCenteredOnTracking = false;
-    updateTrackingPanel(null, "Seguimiento detenido: driver desconectado");
+    updateTrackingPanel(
+      {
+        lat: destination.lat,
+        lng: destination.lng,
+        timestamp: new Date().toISOString()
+      },
+      "Seguimiento detenido: driver desconectado"
+    );
   });
 
   socket.on("disconnect", () => {
@@ -267,9 +317,16 @@ async function fetchLatestTracking(currentShipmentId) {
       return;
     }
 
-    marker = L.marker([latest.lat, latest.lng], { icon: trackingIcon }).addTo(map);
-    marker.bindPopup(`Shipment ${currentShipmentId}`).openPopup();
-    updateTrackingPanel(latest);
+    upsertRiderTrackingMarker(latest.lat, latest.lng);
+
+    updateTrackingPanel(
+      {
+        lat: destination.lat,
+        lng: destination.lng,
+        timestamp: latest.timestamp || new Date().toISOString()
+      },
+      `Destino fijo. Ultima senal del rider: ${latest.lat.toFixed(5)}, ${latest.lng.toFixed(5)}`
+    );
   } catch (error) {
     console.error("Error validating shipment:", error);
     updateTrackingPanel(null, "No se pudo consultar la ultima ubicacion");
