@@ -58,8 +58,6 @@ let driverIntervalId = null;
 
 const shipmentValue = document.getElementById("shipment-value");
 const trackingStatus = document.getElementById("tracking-status");
-const trackingLat = document.getElementById("tracking-lat");
-const trackingLng = document.getElementById("tracking-lng");
 const trackingTime = document.getElementById("tracking-time");
 
 shipmentValue.textContent = shipmentId || "Sin shipmentId";
@@ -131,15 +129,11 @@ function updateTrackingPanel(payload, customStatus) {
       (shipmentId
         ? "Esperando actualizaciones del paquete..."
         : "Agrega ?shipmentId=SHIP-001 para escuchar un paquete");
-    trackingLat.textContent = "-";
-    trackingLng.textContent = "-";
     trackingTime.textContent = "-";
     return;
   }
 
   trackingStatus.textContent = customStatus || "Recibiendo ubicacion en tiempo real";
-  trackingLat.textContent = payload.lat.toFixed(6);
-  trackingLng.textContent = payload.lng.toFixed(6);
   trackingTime.textContent = new Date(payload.timestamp).toLocaleString();
 }
 
