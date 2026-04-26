@@ -1,3 +1,5 @@
+const DRIVER_UPDATE_INTERVAL_MS = 20000;
+
 const map = L.map("map", {
   zoomControl: true,
   minZoom: 5
@@ -8,7 +10,8 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
 }).addTo(map);
 
-const trackingIcon = L.icon({  iconUrl: "./assets/tracking-icon.png",
+const trackingIcon = L.icon({
+  iconUrl: "./assets/tracking-icon.png",
   iconSize: [24, 24],
   iconAnchor: [16, 16],
   popupAnchor: [0, -16]
@@ -23,15 +26,121 @@ const viewerIcon = L.icon({
 
 let marker = null;
 let viewerMarker = null;
+let socket = null;
+let hasCenteredOnTracking = false;
+let hasUserInteractedWithMap = false;
+let lastDriverEmitAt = 0;
+let latestDriverCoords = null;
+let driverIntervalId = null;
 
 const params = new URLSearchParams(window.location.search);
 const shipmentId = params.get("shipmentId");
 const mode = params.get("mode") === "driver" ? "driver" : "viewer";
 
-let socket = null;
+const shipmentValue = document.getElementById("shipment-value");
+const trackingStatus = document.getElementById("tracking-status");
+const trackingLat = document.getElementById("tracking-lat");
+const trackingLng = document.getElementById("tracking-lng");
+const trackingTime = document.getElementById("tracking-time");
+
+shipmentValue.textContent = shipmentId || "Sin shipmentId";
+
+const mapContainer = map.getContainer();
+mapContainer.addEventListener("pointerdown", () => {
+  hasUserInteractedWithMap = true;
+});
+mapContainer.addEventListener(
+  "wheel",
+  () => {
+    hasUserInteractedWithMap = true;
+  },
+  { passive: true }
+);
+mapContainer.addEventListener(
+  "touchstart",
+  () => {
+    hasUserInteractedWithMap = true;
+  },
+  { passive: true }
+);
+map.on("dragstart zoomstart", () => {
+  hasUserInteractedWithMap = true;
+});
+
+function centerMapIfAllowed(lat, lng, zoomLevel = 14) {
+  if (hasUserInteractedWithMap) {
+    return;
+  }
+
+  map.setView([lat, lng], Math.max(map.getZoom(), zoomLevel), {
+    animate: true,
+    duration: 0.6
+  });
+}
+
+function clearAnyTrailLayer() {
+  map.eachLayer((layer) => {
+    if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
+      map.removeLayer(layer);
+    }
+  });
+}
+
+function updateTrackingPanel(payload, customStatus) {
+  if (!payload) {
+    trackingStatus.textContent =
+      customStatus ||
+      (shipmentId
+        ? "Esperando actualizaciones del paquete..."
+        : "Agrega ?shipmentId=SHIP-001 para escuchar un paquete");
+    trackingLat.textContent = "-";
+    trackingLng.textContent = "-";
+    trackingTime.textContent = "-";
+    return;
+  }
+
+  trackingStatus.textContent = customStatus || "Recibiendo ubicacion en tiempo real";
+  trackingLat.textContent = payload.lat.toFixed(6);
+  trackingLng.textContent = payload.lng.toFixed(6);
+  trackingTime.textContent = new Date(payload.timestamp).toLocaleString();
+}
+
+function emitDriverTracking() {
+  if (mode !== "driver" || !socket || !socket.connected || !latestDriverCoords) {
+    return;
+  }
+
+  const now = Date.now();
+  if (lastDriverEmitAt && now - lastDriverEmitAt < DRIVER_UPDATE_INTERVAL_MS) {
+    return;
+  }
+
+  socket.emit("tracking:driver", latestDriverCoords);
+  lastDriverEmitAt = now;
+}
+
+function startDriverInterval() {
+  if (mode !== "driver" || driverIntervalId) {
+    return;
+  }
+
+  driverIntervalId = window.setInterval(() => {
+    emitDriverTracking();
+  }, DRIVER_UPDATE_INTERVAL_MS);
+}
+
+function stopDriverInterval() {
+  if (!driverIntervalId) {
+    return;
+  }
+
+  window.clearInterval(driverIntervalId);
+  driverIntervalId = null;
+}
 
 function initializeTracking() {
-  // Always show viewer location
+  updateTrackingPanel(null);
+
   viewerMarker = L.marker([-38.6893, -62.2698], { icon: viewerIcon }).addTo(map);
 
   if (!navigator.geolocation) {
@@ -47,91 +156,42 @@ function initializeTracking() {
         viewerMarker.setLatLng([latitude, longitude]);
         viewerMarker.bindTooltip("Tu ubicacion", { permanent: false });
       }
-      map.setView([latitude, longitude], Math.max(map.getZoom(), 14), {
-        animate: true,
-        duration: 0.6
-      });
 
-      if (mode === "driver" && socket) {
-        socket.emit("tracking:driver", {
-          lat: latitude,
-          lng: longitude,
-          accuracy,
-          speedKmh: typeof speed === "number" ? Math.round(speed * 3.6 * 10) / 10 : null
-        });
-      }
+      centerMapIfAllowed(latitude, longitude);
+
+      latestDriverCoords = {
+        lat: latitude,
+        lng: longitude,
+        accuracy,
+        speedKmh: typeof speed === "number" ? Math.round(speed * 3.6 * 10) / 10 : null
+      };
+
+      emitDriverTracking();
     },
     (error) => {
       console.warn("Geolocation error", error.message);
     },
     {
       enableHighAccuracy: true,
-      maximumAge: 2000,
+      maximumAge: DRIVER_UPDATE_INTERVAL_MS,
       timeout: 10000
     }
   );
 
-  // Only initialize tracking if shipmentId is provided
   if (!shipmentId) {
     console.log("No shipmentId specified. Showing only your location.");
     return;
   }
 
-  // Validate shipmentId exists before rendering
-  validateAndInitializeTracking(shipmentId);
+  initializeSocketTracking(shipmentId);
+  fetchLatestTracking(shipmentId);
 }
-
-function clearAnyTrailLayer() {
-  map.eachLayer((layer) => {
-    if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
-      map.removeLayer(layer);
-    }
-  });
-}
-
-// Defensive cleanup in case an old cached script created a trail polyline.
-clearAnyTrailLayer();
 
 function setupSocketListeners() {
   socket.on("connect", () => {
     console.log("Connected to realtime server", socket.id);
-
-    if (!navigator.geolocation) {
-      console.warn("Geolocation API is not available in this browser");
-      return;
-    }
-
-    navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude, accuracy, speed } = position.coords;
-
-        if (viewerMarker) {
-          viewerMarker.setLatLng([latitude, longitude]);
-          viewerMarker.bindTooltip("Tu ubicacion", { permanent: false });
-        }
-        map.setView([latitude, longitude], Math.max(map.getZoom(), 14), {
-          animate: true,
-          duration: 0.6
-        });
-
-        if (mode === "driver") {
-          socket.emit("tracking:driver", {
-            lat: latitude,
-            lng: longitude,
-            accuracy,
-            speedKmh: typeof speed === "number" ? Math.round(speed * 3.6 * 10) / 10 : null
-          });
-        }
-      },
-      (error) => {
-        console.warn("Geolocation error", error.message);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 2000,
-        timeout: 10000
-      }
-    );
+    startDriverInterval();
+    emitDriverTracking();
   });
 
   socket.on("tracking:update", (payload) => {
@@ -139,10 +199,19 @@ function setupSocketListeners() {
 
     clearAnyTrailLayer();
 
-    if (marker) {
-      marker.setLatLng([lat, lng]);
-      marker.bindPopup(`Shipment ${shipmentId}`).openPopup();
+    if (!marker) {
+      marker = L.marker([lat, lng], { icon: trackingIcon }).addTo(map);
     }
+
+    marker.setLatLng([lat, lng]);
+    marker.bindPopup(`Shipment ${currentShipmentId}`).openPopup();
+
+    if (!hasCenteredOnTracking) {
+      centerMapIfAllowed(lat, lng);
+      hasCenteredOnTracking = true;
+    }
+
+    updateTrackingPanel({ lat, lng, timestamp });
 
     if (typeof speedKmh === "number") {
       console.log(`Tracking ${currentShipmentId}: ${speedKmh} km/h at ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
@@ -150,31 +219,62 @@ function setupSocketListeners() {
       console.log(`Tracking ${currentShipmentId}: GPS ±${Math.round(accuracy)} m`);
     }
   });
-}
 
-async function validateAndInitializeTracking(shipmentId) {
-  try {
-    const response = await fetch(`/api/tracking/${shipmentId}/latest`);
-    
-    if (!response.ok) {
-      console.log(`Shipment ID "${shipmentId}" does not exist. Showing only your location.`);
+  socket.on("tracking:stopped", (payload) => {
+    const stoppedShipmentId = payload?.shipmentId;
+    if (stoppedShipmentId && stoppedShipmentId !== shipmentId) {
       return;
     }
 
-    // Shipment exists, initialize tracking
-    marker = L.marker([-38.6893, -62.2698], { icon: trackingIcon }).addTo(map);
+    if (marker) {
+      map.removeLayer(marker);
+      marker = null;
+    }
 
-    socket = io({
-      query: {
-        shipmentId,
-        mode
-      }
-    });
+    hasCenteredOnTracking = false;
+    updateTrackingPanel(null, "Seguimiento detenido: driver desconectado");
+  });
 
-    setupSocketListeners();
+  socket.on("disconnect", () => {
+    stopDriverInterval();
+    trackingStatus.textContent = "Conexion cerrada. Reintentando...";
+  });
+}
+
+function initializeSocketTracking(currentShipmentId) {
+  socket = io({
+    query: {
+      shipmentId: currentShipmentId,
+      mode
+    }
+  });
+
+  setupSocketListeners();
+}
+
+async function fetchLatestTracking(currentShipmentId) {
+  try {
+    const response = await fetch(`/api/tracking/${currentShipmentId}/latest`);
+
+    if (!response.ok) {
+      updateTrackingPanel(null, "Paquete sin ubicaciones todavia. Esperando primer dato...");
+      return;
+    }
+
+    const result = await response.json();
+    const latest = result?.data;
+    if (!latest || typeof latest.lat !== "number" || typeof latest.lng !== "number") {
+      return;
+    }
+
+    marker = L.marker([latest.lat, latest.lng], { icon: trackingIcon }).addTo(map);
+    marker.bindPopup(`Shipment ${currentShipmentId}`).openPopup();
+    updateTrackingPanel(latest);
   } catch (error) {
     console.error("Error validating shipment:", error);
+    updateTrackingPanel(null, "No se pudo consultar la ultima ubicacion");
   }
 }
 
+clearAnyTrailLayer();
 initializeTracking();

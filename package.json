@@ -4,7 +4,8 @@
   "description": "Realtime tracking demo with Node, Socket.IO and Leaflet",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "keywords": [
     "leaflet",

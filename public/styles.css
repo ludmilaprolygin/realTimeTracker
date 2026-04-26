@@ -35,12 +35,48 @@ body {
   height: 100%;
 }
 
+.status-card {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  z-index: 1000;
+  width: min(320px, calc(100% - 2rem));
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 10px 26px rgba(27, 36, 48, 0.16);
+  backdrop-filter: blur(2px);
+}
+
+.status-card h1 {
+  margin: 0 0 0.55rem;
+  font-size: 1.05rem;
+}
+
+.status-card p {
+  margin: 0.3rem 0;
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.status-card strong {
+  color: var(--ink);
+}
+
 #map {
   height: 100%;
   width: 100%;
 }
 
 @media (max-width: 860px) {
+  .status-card {
+    left: 0.75rem;
+    top: 0.75rem;
+    width: calc(100% - 1.5rem);
+    padding: 0.75rem;
+  }
+
   #map {
     height: 100%;
   }
