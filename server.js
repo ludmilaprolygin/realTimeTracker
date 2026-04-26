@@ -180,6 +180,7 @@ app.get("/api/docs", (_req, res) => {
 
 const ROOM_PREFIX = "shipment:";
 const trackedShipments = new Map();
+const driverSocketsByShipment = new Map();
 
 // Note: No default data. Shipments are created only via POST /api/tracking/update
 
@@ -197,6 +198,30 @@ function canWriteTracking(req) {
   }
 
   return req.header("x-tracking-key") === TRACKING_API_KEY;
+}
+
+function addDriverSocket(shipmentId, socketId) {
+  if (!driverSocketsByShipment.has(shipmentId)) {
+    driverSocketsByShipment.set(shipmentId, new Set());
+  }
+
+  driverSocketsByShipment.get(shipmentId).add(socketId);
+}
+
+function removeDriverSocket(shipmentId, socketId) {
+  const socketSet = driverSocketsByShipment.get(shipmentId);
+  if (!socketSet) {
+    return false;
+  }
+
+  socketSet.delete(socketId);
+
+  if (socketSet.size === 0) {
+    driverSocketsByShipment.delete(shipmentId);
+    return true;
+  }
+
+  return false;
 }
 
 app.post("/api/tracking/update", (req, res) => {
@@ -257,6 +282,7 @@ app.delete("/api/tracking/:shipmentId", (req, res) => {
 
 io.on("connection", (socket) => {
   const shipmentId = String(socket.handshake.query.shipmentId || "");
+  const socketMode = socket.handshake.query.mode === "driver" ? "driver" : "viewer";
   const room = `${ROOM_PREFIX}${shipmentId}`;
 
   if (!shipmentId) {
@@ -267,12 +293,20 @@ io.on("connection", (socket) => {
 
   socket.join(room);
 
+  if (socketMode === "driver") {
+    addDriverSocket(shipmentId, socket.id);
+  }
+
   const lastKnown = trackedShipments.get(shipmentId);
   if (lastKnown) {
     socket.emit("tracking:update", lastKnown);
   }
 
   socket.on("tracking:driver", ({ lat, lng, accuracy, speedKmh }) => {
+    if (socketMode !== "driver") {
+      return;
+    }
+
     if (typeof lat !== "number" || typeof lng !== "number") {
       return;
     }
@@ -287,6 +321,24 @@ io.on("connection", (socket) => {
     };
 
     publishTrackingUpdate(payload);
+  });
+
+  socket.on("disconnect", () => {
+    if (socketMode !== "driver") {
+      return;
+    }
+
+    const hasNoDrivers = removeDriverSocket(shipmentId, socket.id);
+    if (!hasNoDrivers) {
+      return;
+    }
+
+    trackedShipments.delete(shipmentId);
+    io.to(room).emit("tracking:stopped", {
+      shipmentId,
+      reason: "driver_offline",
+      timestamp: new Date().toISOString()
+    });
   });
 });
 
