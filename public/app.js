@@ -23,6 +23,8 @@ const viewerIcon = L.icon({
 
 let marker = null;
 let viewerMarker = null;
+let hasCenteredOnTracking = false;
+let hasUserInteractedWithMap = false;
 
 const params = new URLSearchParams(window.location.search);
 const shipmentId = params.get("shipmentId");
@@ -30,7 +32,56 @@ const mode = params.get("mode") === "driver" ? "driver" : "viewer";
 
 let socket = null;
 
+const shipmentValue = document.getElementById("shipment-value");
+const trackingStatus = document.getElementById("tracking-status");
+const trackingLat = document.getElementById("tracking-lat");
+const trackingLng = document.getElementById("tracking-lng");
+const trackingTime = document.getElementById("tracking-time");
+
+shipmentValue.textContent = shipmentId || "Sin shipmentId";
+
+const mapContainer = map.getContainer();
+mapContainer.addEventListener("pointerdown", () => {
+  hasUserInteractedWithMap = true;
+});
+mapContainer.addEventListener("wheel", () => {
+  hasUserInteractedWithMap = true;
+}, { passive: true });
+mapContainer.addEventListener("touchstart", () => {
+  hasUserInteractedWithMap = true;
+}, { passive: true });
+
+function updateTrackingPanel(payload) {
+  if (!payload) {
+    trackingStatus.textContent = shipmentId
+      ? "Esperando actualizaciones del paquete..."
+      : "Agrega ?shipmentId=SHIP-001 para escuchar un paquete";
+    trackingLat.textContent = "-";
+    trackingLng.textContent = "-";
+    trackingTime.textContent = "-";
+    return;
+  }
+
+  trackingStatus.textContent = "Recibiendo ubicacion en tiempo real";
+function centerMapIfAllowed(lat, lng, zoomLevel = 14) {
+  if (hasUserInteractedWithMap) {
+    return;
+  }
+
+  map.setView([lat, lng], Math.max(map.getZoom(), zoomLevel), {
+    animate: true,
+    duration: 0.6
+  });
+}
+
+  trackingLat.textContent = payload.lat.toFixed(6);
+  trackingLng.textContent = payload.lng.toFixed(6);
+  trackingTime.textContent = new Date(payload.timestamp).toLocaleString();
+}
+
 function initializeTracking() {
+  updateTrackingPanel(null);
+
   // Always show viewer location
   viewerMarker = L.marker([-38.6893, -62.2698], { icon: viewerIcon }).addTo(map);
 
@@ -47,10 +98,7 @@ function initializeTracking() {
         viewerMarker.setLatLng([latitude, longitude]);
         viewerMarker.bindTooltip("Tu ubicacion", { permanent: false });
       }
-      map.setView([latitude, longitude], Math.max(map.getZoom(), 14), {
-        animate: true,
-        duration: 0.6
-      });
+      centerMapIfAllowed(latitude, longitude);
 
       if (mode === "driver" && socket) {
         socket.emit("tracking:driver", {
@@ -77,8 +125,8 @@ function initializeTracking() {
     return;
   }
 
-  // Validate shipmentId exists before rendering
-  validateAndInitializeTracking(shipmentId);
+  initializeSocketTracking(shipmentId);
+  fetchLatestTracking(shipmentId);
 }
 
 function clearAnyTrailLayer() {
@@ -95,43 +143,6 @@ clearAnyTrailLayer();
 function setupSocketListeners() {
   socket.on("connect", () => {
     console.log("Connected to realtime server", socket.id);
-
-    if (!navigator.geolocation) {
-      console.warn("Geolocation API is not available in this browser");
-      return;
-    }
-
-    navigator.geolocation.watchPosition(
-      (position) => {
-        const { latitude, longitude, accuracy, speed } = position.coords;
-
-        if (viewerMarker) {
-          viewerMarker.setLatLng([latitude, longitude]);
-          viewerMarker.bindTooltip("Tu ubicacion", { permanent: false });
-        }
-        map.setView([latitude, longitude], Math.max(map.getZoom(), 14), {
-          animate: true,
-          duration: 0.6
-        });
-
-        if (mode === "driver") {
-          socket.emit("tracking:driver", {
-            lat: latitude,
-            lng: longitude,
-            accuracy,
-            speedKmh: typeof speed === "number" ? Math.round(speed * 3.6 * 10) / 10 : null
-          });
-        }
-      },
-      (error) => {
-        console.warn("Geolocation error", error.message);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 2000,
-        timeout: 10000
-      }
-    );
   });
 
   socket.on("tracking:update", (payload) => {
@@ -139,10 +150,19 @@ function setupSocketListeners() {
 
     clearAnyTrailLayer();
 
-    if (marker) {
-      marker.setLatLng([lat, lng]);
-      marker.bindPopup(`Shipment ${shipmentId}`).openPopup();
+    if (!marker) {
+      marker = L.marker([lat, lng], { icon: trackingIcon }).addTo(map);
     }
+
+    marker.setLatLng([lat, lng]);
+    marker.bindPopup(`Shipment ${currentShipmentId}`).openPopup();
+
+    if (!hasCenteredOnTracking) {
+      centerMapIfAllowed(lat, lng);
+      hasCenteredOnTracking = true;
+    }
+
+    updateTrackingPanel({ lat, lng, timestamp });
 
     if (typeof speedKmh === "number") {
       console.log(`Tracking ${currentShipmentId}: ${speedKmh} km/h at ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
@@ -150,30 +170,44 @@ function setupSocketListeners() {
       console.log(`Tracking ${currentShipmentId}: GPS ±${Math.round(accuracy)} m`);
     }
   });
+
+  socket.on("disconnect", () => {
+    trackingStatus.textContent = "Conexion cerrada. Reintentando...";
+  });
 }
 
-async function validateAndInitializeTracking(shipmentId) {
+function initializeSocketTracking(shipmentId) {
+  socket = io({
+    query: {
+      shipmentId,
+      mode
+    }
+  });
+
+  setupSocketListeners();
+}
+
+async function fetchLatestTracking(shipmentId) {
   try {
     const response = await fetch(`/api/tracking/${shipmentId}/latest`);
-    
+
     if (!response.ok) {
-      console.log(`Shipment ID "${shipmentId}" does not exist. Showing only your location.`);
+      trackingStatus.textContent = "Paquete sin ubicaciones todavia. Esperando primer dato...";
       return;
     }
 
-    // Shipment exists, initialize tracking
-    marker = L.marker([-38.6893, -62.2698], { icon: trackingIcon }).addTo(map);
+    const result = await response.json();
+    const latest = result?.data;
+    if (!latest || typeof latest.lat !== "number" || typeof latest.lng !== "number") {
+      return;
+    }
 
-    socket = io({
-      query: {
-        shipmentId,
-        mode
-      }
-    });
-
-    setupSocketListeners();
+    marker = L.marker([latest.lat, latest.lng], { icon: trackingIcon }).addTo(map);
+    marker.bindPopup(`Shipment ${shipmentId}`).openPopup();
+    updateTrackingPanel(latest);
   } catch (error) {
     console.error("Error validating shipment:", error);
+    trackingStatus.textContent = "No se pudo consultar la ultima ubicacion";
   }
 }
 

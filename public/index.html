@@ -16,6 +16,14 @@
   <body>
     <main class="layout">
       <section class="map-wrap">
+        <aside class="status-card" aria-live="polite">
+          <h1>Seguimiento en vivo</h1>
+          <p><strong>Paquete:</strong> <span id="shipment-value">-</span></p>
+          <p><strong>Estado:</strong> <span id="tracking-status">Esperando datos...</span></p>
+          <p><strong>Latitud:</strong> <span id="tracking-lat">-</span></p>
+          <p><strong>Longitud:</strong> <span id="tracking-lng">-</span></p>
+          <p><strong>Actualizado:</strong> <span id="tracking-time">-</span></p>
+        </aside>
         <div id="map" aria-label="Live map"></div>
       </section>
     </main>
