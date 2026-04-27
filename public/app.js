@@ -142,6 +142,12 @@ const shipmentValue = document.getElementById("shipment-value");
 const trackingStatus = document.getElementById("tracking-status");
 const trackingTime = document.getElementById("tracking-time");
 
+function setTrackingStatus(text) {
+  if (trackingStatus) {
+    trackingStatus.textContent = text;
+  }
+}
+
 shipmentValue.textContent = shipmentIds.length > 0 ? shipmentIds.join(", ") : "Sin shipmentId";
 
 const mapContainer = map.getContainer();
@@ -229,16 +235,17 @@ function upsertRiderTrackingMarker(lat, lng) {
 
 function updateTrackingPanel(payload, customStatus) {
   if (!payload) {
-    trackingStatus.textContent =
+    setTrackingStatus(
       customStatus ||
       (shipmentId
         ? "Esperando actualizaciones del paquete..."
-        : "Agrega ?shipmentId=SHIP-001 para escuchar un paquete");
+        : "Agrega ?shipmentId=SHIP-001 para escuchar un paquete")
+    );
     trackingTime.textContent = "-";
     return;
   }
 
-  trackingStatus.textContent = customStatus || "Recibiendo ubicacion en tiempo real";
+  setTrackingStatus(customStatus || "Recibiendo ubicacion en tiempo real");
   trackingTime.textContent = new Date(payload.timestamp).toLocaleString();
 }
 
@@ -393,7 +400,7 @@ function setupSocketListeners() {
 
   socket.on("disconnect", () => {
     stopDriverInterval();
-    trackingStatus.textContent = "Conexion cerrada. Reintentando...";
+    setTrackingStatus("Conexion cerrada. Reintentando...");
   });
 }
 
