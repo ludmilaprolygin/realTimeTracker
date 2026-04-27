@@ -8,18 +8,100 @@ const DEFAULT_DESTINATION = {
 const params = new URLSearchParams(window.location.search);
 const shipmentId = params.get("shipmentId");
 const mode = params.get("mode") === "driver" ? "driver" : "viewer";
+const shipmentIds = mode === "driver"
+  ? String(params.get("shipmentIds") || shipmentId || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+  : shipmentId
+    ? [shipmentId]
+    : [];
 
-const destinationLatParam = Number(params.get("destinationLat"));
-const destinationLngParam = Number(params.get("destinationLng"));
-const destination = {
-  lat: Number.isFinite(destinationLatParam) ? destinationLatParam : DEFAULT_DESTINATION.lat,
-  lng: Number.isFinite(destinationLngParam) ? destinationLngParam : DEFAULT_DESTINATION.lng
-};
+function parseOptionalNumber(rawValue) {
+  if (rawValue === null || rawValue === undefined) {
+    return NaN;
+  }
+
+  const normalized = String(rawValue).trim();
+  if (!normalized) {
+    return NaN;
+  }
+
+  return Number(normalized);
+}
+
+function parseNumberList(rawValue) {
+  return String(rawValue || "")
+    .split(",")
+    .map((value) => {
+      const normalized = value.trim();
+      return normalized ? Number(normalized) : NaN;
+    })
+    .filter((value) => Number.isFinite(value));
+}
+
+function sanitizeCoordinates(lat, lng, fallback) {
+  const safeLat = Number.isFinite(lat) && lat >= -90 && lat <= 90 ? lat : fallback.lat;
+  const safeLng = Number.isFinite(lng) && lng >= -180 && lng <= 180 ? lng : fallback.lng;
+  return { lat: safeLat, lng: safeLng };
+}
+
+const destinationLatsParam = parseNumberList(params.get("destinationLats"));
+const destinationLngsParam = parseNumberList(params.get("destinationLngs"));
+const destinationLatParam = parseOptionalNumber(params.get("destinationLat"));
+const destinationLngParam = parseOptionalNumber(params.get("destinationLng"));
+
+const fallbackLat = Number.isFinite(destinationLatParam)
+  ? destinationLatParam
+  : destinationLatsParam[0];
+const fallbackLng = Number.isFinite(destinationLngParam)
+  ? destinationLngParam
+  : destinationLngsParam[0];
+
+const fallbackDestination = sanitizeCoordinates(
+  Number.isFinite(fallbackLat) ? fallbackLat : DEFAULT_DESTINATION.lat,
+  Number.isFinite(fallbackLng) ? fallbackLng : DEFAULT_DESTINATION.lng,
+  DEFAULT_DESTINATION
+);
+
+function buildDestinationByShipment(ids) {
+  const destinationMap = new Map();
+  const latList = destinationLatsParam;
+  const lngList = destinationLngsParam;
+
+  if (latList.length > 0 && latList.length === lngList.length && ids.length > 0) {
+    ids.forEach((id, index) => {
+      const lat = Number.isFinite(latList[index]) ? latList[index] : fallbackDestination.lat;
+      const lng = Number.isFinite(lngList[index]) ? lngList[index] : fallbackDestination.lng;
+      destinationMap.set(id, sanitizeCoordinates(lat, lng, fallbackDestination));
+    });
+  }
+
+  ids.forEach((id) => {
+    if (!destinationMap.has(id)) {
+      destinationMap.set(id, fallbackDestination);
+    }
+  });
+
+  if (ids.length === 0) {
+    destinationMap.set("DEFAULT", fallbackDestination);
+  }
+
+  return destinationMap;
+}
+
+const destinationByShipment = buildDestinationByShipment(shipmentIds);
+const primaryShipmentId = shipmentIds[0] || shipmentId || "DEFAULT";
+const primaryDestination = destinationByShipment.get(primaryShipmentId) || fallbackDestination;
+
+function getDestinationForShipment(currentShipmentId) {
+  return destinationByShipment.get(currentShipmentId) || primaryDestination;
+}
 
 const map = L.map("map", {
   zoomControl: true,
   minZoom: 5
-}).setView([destination.lat, destination.lng], 14);
+}).setView([primaryDestination.lat, primaryDestination.lng], 14);
 
 L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
@@ -47,7 +129,7 @@ const viewerSelfIcon = L.icon({
   popupAnchor: [0, -18]
 });
 
-let destinationMarker = null;
+const destinationMarkersByShipment = new Map();
 let selfLocationMarker = null;
 let riderTrackingMarker = null;
 let socket = null;
@@ -60,7 +142,7 @@ const shipmentValue = document.getElementById("shipment-value");
 const trackingStatus = document.getElementById("tracking-status");
 const trackingTime = document.getElementById("tracking-time");
 
-shipmentValue.textContent = shipmentId || "Sin shipmentId";
+shipmentValue.textContent = shipmentIds.length > 0 ? shipmentIds.join(", ") : "Sin shipmentId";
 
 const mapContainer = map.getContainer();
 mapContainer.addEventListener("pointerdown", () => {
@@ -103,9 +185,32 @@ function clearAnyTrailLayer() {
   });
 }
 
-function initializeDestinationMarker() {
-  destinationMarker = L.marker([destination.lat, destination.lng], { icon: destinationIcon }).addTo(map);
-  destinationMarker.bindPopup(`Destino del paquete ${shipmentId || "SIN-ID"}`);
+function initializeDestinationMarkers() {
+  const idsToRender = shipmentIds.length > 0 ? shipmentIds : ["DEFAULT"];
+
+  idsToRender.forEach((id) => {
+    const destination = getDestinationForShipment(id);
+    const marker = L.marker([destination.lat, destination.lng], { icon: destinationIcon }).addTo(map);
+    const popupLabel = id === "DEFAULT" ? "Destino del paquete" : `Destino del paquete ${id}`;
+    marker.bindPopup(popupLabel);
+    destinationMarkersByShipment.set(id, marker);
+  });
+
+  if (mode === "driver" && idsToRender.length > 1 && !hasUserInteractedWithMap) {
+    const bounds = L.latLngBounds(
+      idsToRender.map((id) => {
+        const destination = getDestinationForShipment(id);
+        return [destination.lat, destination.lng];
+      })
+    );
+
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, {
+        padding: [40, 40],
+        maxZoom: 14
+      });
+    }
+  }
 }
 
 function upsertRiderTrackingMarker(lat, lng) {
@@ -147,7 +252,12 @@ function emitDriverTracking() {
     return;
   }
 
-  socket.emit("tracking:driver", latestDriverCoords);
+  shipmentIds.forEach((id) => {
+    socket.emit("tracking:driver", {
+      shipmentId: id,
+      ...latestDriverCoords
+    });
+  });
   lastDriverEmitAt = now;
 }
 
@@ -173,17 +283,17 @@ function stopDriverInterval() {
 function initializeTracking() {
   updateTrackingPanel(
     {
-      lat: destination.lat,
-      lng: destination.lng,
+      lat: primaryDestination.lat,
+      lng: primaryDestination.lng,
       timestamp: new Date().toISOString()
     },
-    "Mostrando destino del paquete"
+    shipmentIds.length > 1 ? "Mostrando destinos fijos de los pedidos" : "Mostrando destino del paquete"
   );
 
-  initializeDestinationMarker();
+  initializeDestinationMarkers();
 
   const selfIcon = mode === "viewer" ? viewerSelfIcon : riderSelfIcon;
-  selfLocationMarker = L.marker([destination.lat, destination.lng], { icon: selfIcon }).addTo(map);
+  selfLocationMarker = L.marker([primaryDestination.lat, primaryDestination.lng], { icon: selfIcon }).addTo(map);
   const selfLabel = mode === "driver" ? "Tu ubicacion actual (rider)" : "Tu ubicacion actual (viewer)";
   selfLocationMarker.bindTooltip(selfLabel, { permanent: false });
 
@@ -223,13 +333,15 @@ function initializeTracking() {
     }
   );
 
-  if (!shipmentId) {
+  if (shipmentIds.length === 0) {
     console.log("No shipmentId specified. Showing only your location.");
     return;
   }
 
-  initializeSocketTracking(shipmentId);
-  fetchLatestTracking(shipmentId);
+  initializeSocketTracking(shipmentIds);
+  shipmentIds.forEach((id) => {
+    fetchLatestTracking(id);
+  });
 }
 
 function setupSocketListeners() {
@@ -247,8 +359,8 @@ function setupSocketListeners() {
 
     // Keep map pin fixed at destination; realtime updates are reflected in status only.
     updateTrackingPanel(
-      { lat: destination.lat, lng: destination.lng, timestamp },
-      `Destino fijo. Ultima senal del rider: ${lat.toFixed(5)}, ${lng.toFixed(5)}`
+      { lat: primaryDestination.lat, lng: primaryDestination.lng, timestamp },
+      `Destino fijo (${currentShipmentId}). Ultima senal del rider: ${lat.toFixed(5)}, ${lng.toFixed(5)}`
     );
 
     if (typeof speedKmh === "number") {
@@ -259,8 +371,8 @@ function setupSocketListeners() {
   });
 
   socket.on("tracking:stopped", (payload) => {
-    const stoppedShipmentId = payload?.shipmentId;
-    if (stoppedShipmentId && stoppedShipmentId !== shipmentId) {
+    const stoppedShipmentId = String(payload?.shipmentId || "");
+    if (stoppedShipmentId && !shipmentIds.includes(stoppedShipmentId)) {
       return;
     }
 
@@ -271,11 +383,11 @@ function setupSocketListeners() {
 
     updateTrackingPanel(
       {
-        lat: destination.lat,
-        lng: destination.lng,
+        lat: primaryDestination.lat,
+        lng: primaryDestination.lng,
         timestamp: new Date().toISOString()
       },
-      "Seguimiento detenido: driver desconectado"
+      `Seguimiento detenido: driver desconectado${stoppedShipmentId ? ` (${stoppedShipmentId})` : ""}`
     );
   });
 
@@ -285,10 +397,11 @@ function setupSocketListeners() {
   });
 }
 
-function initializeSocketTracking(currentShipmentId) {
+function initializeSocketTracking(currentShipmentIds) {
   socket = io({
     query: {
-      shipmentId: currentShipmentId,
+      shipmentId: currentShipmentIds[0],
+      shipmentIds: currentShipmentIds.join(","),
       mode
     }
   });
@@ -315,11 +428,11 @@ async function fetchLatestTracking(currentShipmentId) {
 
     updateTrackingPanel(
       {
-        lat: destination.lat,
-        lng: destination.lng,
+        lat: primaryDestination.lat,
+        lng: primaryDestination.lng,
         timestamp: latest.timestamp || new Date().toISOString()
       },
-      `Destino fijo. Ultima senal del rider: ${latest.lat.toFixed(5)}, ${latest.lng.toFixed(5)}`
+      `Destino fijo (${currentShipmentId}). Ultima senal del rider: ${latest.lat.toFixed(5)}, ${latest.lng.toFixed(5)}`
     );
   } catch (error) {
     console.error("Error validating shipment:", error);
