@@ -224,6 +224,19 @@ function removeDriverSocket(shipmentId, socketId) {
   return false;
 }
 
+function parseShipmentIds(rawShipmentIds, fallbackShipmentId = "") {
+  const ids = String(rawShipmentIds || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+
+  if (ids.length > 0) {
+    return [...new Set(ids)];
+  }
+
+  return fallbackShipmentId ? [fallbackShipmentId] : [];
+}
+
 app.post("/api/tracking/update", (req, res) => {
   if (!canWriteTracking(req)) {
     return res.status(401).json({ ok: false, error: "Invalid tracking key" });
@@ -283,26 +296,34 @@ app.delete("/api/tracking/:shipmentId", (req, res) => {
 io.on("connection", (socket) => {
   const shipmentId = String(socket.handshake.query.shipmentId || "");
   const socketMode = socket.handshake.query.mode === "driver" ? "driver" : "viewer";
-  const room = `${ROOM_PREFIX}${shipmentId}`;
+  const shipmentIds = socketMode === "driver"
+    ? parseShipmentIds(socket.handshake.query.shipmentIds, shipmentId)
+    : parseShipmentIds(shipmentId);
 
-  if (!shipmentId) {
-    socket.emit("error", { message: "shipmentId query parameter is required" });
+  if (shipmentIds.length === 0) {
+    socket.emit("error", { message: "shipmentId (or shipmentIds for driver mode) is required" });
     socket.disconnect();
     return;
   }
 
-  socket.join(room);
+  shipmentIds.forEach((id) => {
+    socket.join(`${ROOM_PREFIX}${id}`);
+  });
 
   if (socketMode === "driver") {
-    addDriverSocket(shipmentId, socket.id);
+    shipmentIds.forEach((id) => {
+      addDriverSocket(id, socket.id);
+    });
   }
 
-  const lastKnown = trackedShipments.get(shipmentId);
-  if (lastKnown) {
-    socket.emit("tracking:update", lastKnown);
-  }
+  shipmentIds.forEach((id) => {
+    const lastKnown = trackedShipments.get(id);
+    if (lastKnown) {
+      socket.emit("tracking:update", lastKnown);
+    }
+  });
 
-  socket.on("tracking:driver", ({ lat, lng, accuracy, speedKmh }) => {
+  socket.on("tracking:driver", ({ shipmentId: targetShipmentId, lat, lng, accuracy, speedKmh }) => {
     if (socketMode !== "driver") {
       return;
     }
@@ -311,8 +332,13 @@ io.on("connection", (socket) => {
       return;
     }
 
+    const shipmentToUpdate = String(targetShipmentId || shipmentIds[0] || "");
+    if (!shipmentToUpdate || !shipmentIds.includes(shipmentToUpdate)) {
+      return;
+    }
+
     const payload = {
-      shipmentId,
+      shipmentId: shipmentToUpdate,
       lat,
       lng,
       accuracy: typeof accuracy === "number" ? accuracy : null,
@@ -328,16 +354,18 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const hasNoDrivers = removeDriverSocket(shipmentId, socket.id);
-    if (!hasNoDrivers) {
-      return;
-    }
+    shipmentIds.forEach((id) => {
+      const hasNoDrivers = removeDriverSocket(id, socket.id);
+      if (!hasNoDrivers) {
+        return;
+      }
 
-    trackedShipments.delete(shipmentId);
-    io.to(room).emit("tracking:stopped", {
-      shipmentId,
-      reason: "driver_offline",
-      timestamp: new Date().toISOString()
+      trackedShipments.delete(id);
+      io.to(`${ROOM_PREFIX}${id}`).emit("tracking:stopped", {
+        shipmentId: id,
+        reason: "driver_offline",
+        timestamp: new Date().toISOString()
+      });
     });
   });
 });
