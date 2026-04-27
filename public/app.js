@@ -64,6 +64,10 @@ const fallbackDestination = sanitizeCoordinates(
   DEFAULT_DESTINATION
 );
 
+const hasExplicitDestinationCoordinates =
+  (Number.isFinite(destinationLatParam) && Number.isFinite(destinationLngParam)) ||
+  (destinationLatsParam.length > 0 && destinationLatsParam.length === destinationLngsParam.length);
+
 function buildDestinationByShipment(ids) {
   const destinationMap = new Map();
   const latList = destinationLatsParam;
@@ -192,6 +196,10 @@ function clearAnyTrailLayer() {
 }
 
 function initializeDestinationMarkers() {
+  if (!hasExplicitDestinationCoordinates) {
+    return;
+  }
+
   const idsToRender = shipmentIds.length > 0 ? shipmentIds : ["DEFAULT"];
 
   idsToRender.forEach((id) => {
@@ -288,13 +296,21 @@ function stopDriverInterval() {
 }
 
 function initializeTracking() {
+  const initialStatus = hasExplicitDestinationCoordinates
+    ? shipmentIds.length > 1
+      ? "Mostrando destinos fijos de los pedidos"
+      : "Mostrando destino del paquete"
+    : mode === "driver"
+      ? "Mostrando tu ubicacion del driver"
+      : "Mostrando tu ubicacion del viewer";
+
   updateTrackingPanel(
     {
       lat: primaryDestination.lat,
       lng: primaryDestination.lng,
       timestamp: new Date().toISOString()
     },
-    shipmentIds.length > 1 ? "Mostrando destinos fijos de los pedidos" : "Mostrando destino del paquete"
+    initialStatus
   );
 
   initializeDestinationMarkers();
@@ -439,7 +455,9 @@ async function fetchLatestTracking(currentShipmentId) {
         lng: primaryDestination.lng,
         timestamp: latest.timestamp || new Date().toISOString()
       },
-      `Destino fijo (${currentShipmentId}). Ultima senal del rider: ${latest.lat.toFixed(5)}, ${latest.lng.toFixed(5)}`
+      hasExplicitDestinationCoordinates
+        ? `Destino fijo (${currentShipmentId}). Ultima senal del rider: ${latest.lat.toFixed(5)}, ${latest.lng.toFixed(5)}`
+        : `Ubicacion en tiempo real (${currentShipmentId}). Ultima senal del rider: ${latest.lat.toFixed(5)}, ${latest.lng.toFixed(5)}`
     );
   } catch (error) {
     console.error("Error validating shipment:", error);
