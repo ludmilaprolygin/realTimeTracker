@@ -113,8 +113,8 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 
 const destinationIcon = L.icon({
-  iconUrl: "./assets/pin.png?v=1",
-  iconSize: [24, 24],
+  iconUrl: "./assets/Google_pin.png?v=1",
+  iconSize: [17, 24],
   iconAnchor: [11, 11],
   popupAnchor: [0, -11]
 });
@@ -127,7 +127,7 @@ const riderSelfIcon = L.icon({
 });
 
 const viewerSelfIcon = L.icon({
-  iconUrl: "./assets/hombre.png",
+  iconUrl: "./assets/current.png",
   iconSize: [24, 24],
   iconAnchor: [12, 20],
   popupAnchor: [0, -18]
