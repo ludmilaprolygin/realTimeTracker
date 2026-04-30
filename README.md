@@ -46,6 +46,8 @@ Examples:
 	`http://localhost:3000/?shipmentId=SHIP-001&mode=driver`
 - Viewer (your ShippingApp section):
 	`http://localhost:3000/?shipmentId=SHIP-001&mode=viewer`
+- Viewer with JWT:
+	`http://localhost:3000/?shipmentId=SHIP-001&mode=viewer&accessToken=<jwt>`
 
 Behavior:
 
@@ -111,7 +113,136 @@ Then send header in update calls:
 
 `x-tracking-key: my-secret-key`
 
-### 4) Read latest location (fallback query)
+### 4) Restrict read access per shipment with JWT (viewer/driver/latest)
+
+Enable JWT validation in the tracking service:
+
+```bash
+TRACKING_JWT_SECRET=my-super-secret npm start
+```
+
+When `TRACKING_JWT_SECRET` is set:
+
+- `GET /api/tracking/:shipmentId/latest` requires a valid JWT.
+- Socket.IO real-time tracking also requires a valid JWT.
+- JWT must include permissions for the requested shipment IDs.
+
+Accepted token locations:
+
+- Header: `Authorization: Bearer <jwt>`
+- Query param (useful for iframe/web links): `?accessToken=<jwt>`
+
+Supported shipment claims in JWT payload:
+
+- `shipmentId: "SHIP-001"`
+- `shipmentIds: ["SHIP-001", "SHIP-ABC"]`
+- `shipments: ["SHIP-001", "SHIP-ABC"]`
+- `allShipments: true` (wildcard access)
+
+Example payload for one shipment:
+
+```json
+{
+	"sub": "user-42",
+	"shipmentId": "SHIP-001",
+	"exp": 1924992000
+}
+```
+
+Generate a token quickly (PowerShell):
+
+```powershell
+node -e "const jwt=require('jsonwebtoken'); console.log(jwt.sign({sub:'user-42', shipmentIds:['SHIP-001']}, 'my-super-secret', {expiresIn:'1h'}));"
+```
+
+Viewer URL example with JWT:
+
+`http://localhost:3000/?shipmentId=SHIP-001&mode=viewer&accessToken=<jwt>`
+
+Driver URL example with JWT for multiple shipments:
+
+`http://localhost:3000/?shipmentIds=SHIP-001,SHIP-ABC&mode=driver&accessToken=<jwt>`
+
+### 5) Issue JWT from backend (recommended)
+
+Instead of signing JWT in frontend, ask this service to issue short-lived tokens from your backend.
+
+Required env vars in deploy:
+
+- `TRACKING_JWT_SECRET`: JWT signing/verification secret.
+- `TRACKING_TOKEN_ISSUER_KEY`: key your backend uses to call issuer endpoint.
+- `TRACKING_TOKEN_DEFAULT_TTL`: optional token ttl (default `15m`).
+
+Endpoint:
+
+`POST /api/auth/tracking-token`
+
+Headers:
+
+- `x-issuer-key: <TRACKING_TOKEN_ISSUER_KEY>`
+- `Content-Type: application/json`
+
+Body example:
+
+```json
+{
+	"userId": "user-42",
+	"shipmentIds": ["SHIP-001", "SHIP-ABC"],
+	"role": "viewer",
+	"expiresIn": "10m"
+}
+```
+
+Response:
+
+```json
+{
+	"ok": true,
+	"token": "<jwt>",
+	"expiresIn": "10m",
+	"claims": {
+		"sub": "user-42",
+		"role": "viewer",
+		"shipmentIds": ["SHIP-001", "SHIP-ABC"],
+		"allShipments": false
+	}
+}
+```
+
+### 6) Use this deploy from your client app (Render)
+
+Assume your tracking deploy URL is:
+
+`https://tu-tracking.onrender.com`
+
+Recommended flow:
+
+1. In your main backend (the one with authenticated users), call token issuer:
+
+```bash
+curl -X POST "https://tu-tracking.onrender.com/api/auth/tracking-token" \
+  -H "Content-Type: application/json" \
+  -H "x-issuer-key: TU_ISSUER_KEY" \
+  -d '{"userId":"user-42","shipmentIds":["SHIP-001"],"role":"viewer","expiresIn":"10m"}'
+```
+
+2. Receive `token` and send it to your frontend.
+
+3. Open tracking view with that token:
+
+`https://tu-tracking.onrender.com/?shipmentId=SHIP-001&mode=viewer&accessToken=<jwt>`
+
+4. For driver mode:
+
+`https://tu-tracking.onrender.com/?shipmentIds=SHIP-001,SHIP-ABC&mode=driver&accessToken=<jwt>`
+
+Important:
+
+- Never expose `TRACKING_TOKEN_ISSUER_KEY` in frontend/mobile apps.
+- Generate JWT only in backend after checking user permissions for shipment.
+- Use short expirations (`5m` to `15m`) and refresh when needed.
+
+### 7) Read latest location (fallback query)
 
 Endpoint:
 
