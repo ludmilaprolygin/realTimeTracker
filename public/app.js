@@ -8,6 +8,7 @@ const DEFAULT_DESTINATION = {
 const params = new URLSearchParams(window.location.search);
 const shipmentId = params.get("shipmentId");
 const mode = params.get("mode") === "driver" ? "driver" : "viewer";
+const accessToken = String(params.get("accessToken") || "").trim();
 const shipmentIds = mode === "driver"
   ? String(params.get("shipmentIds") || shipmentId || "")
     .split(",")
@@ -38,6 +39,12 @@ function parseNumberList(rawValue) {
       return normalized ? Number(normalized) : NaN;
     })
     .filter((value) => Number.isFinite(value));
+}
+
+function buildLatestTrackingUrl(currentShipmentId) {
+  const encodedShipmentId = encodeURIComponent(currentShipmentId);
+  const query = accessToken ? `?accessToken=${encodeURIComponent(accessToken)}` : "";
+  return `/api/tracking/${encodedShipmentId}/latest${query}`;
 }
 
 function sanitizeCoordinates(lat, lng, fallback) {
@@ -418,14 +425,28 @@ function setupSocketListeners() {
     stopDriverInterval();
     setTrackingStatus("Conexion cerrada. Reintentando...");
   });
+
+  socket.on("tracking:forbidden", (payload) => {
+    stopDriverInterval();
+    const deniedIds = Array.isArray(payload?.shipmentIds) ? payload.shipmentIds.join(", ") : "";
+    setTrackingStatus(
+      deniedIds
+        ? `Sin permisos para ver el tracking de: ${deniedIds}`
+        : "Sin permisos para ver el tracking solicitado"
+    );
+  });
 }
 
 function initializeSocketTracking(currentShipmentIds) {
   socket = io({
+    auth: {
+      token: accessToken
+    },
     query: {
       shipmentId: currentShipmentIds[0],
       shipmentIds: currentShipmentIds.join(","),
-      mode
+      mode,
+      accessToken
     }
   });
 
@@ -434,9 +455,14 @@ function initializeSocketTracking(currentShipmentIds) {
 
 async function fetchLatestTracking(currentShipmentId) {
   try {
-    const response = await fetch(`/api/tracking/${currentShipmentId}/latest`);
+    const response = await fetch(buildLatestTrackingUrl(currentShipmentId));
 
     if (!response.ok) {
+      if (response.status === 403) {
+        updateTrackingPanel(null, "No autorizado para ver este paquete");
+        return;
+      }
+
       updateTrackingPanel(null, "Paquete sin ubicaciones todavia. Esperando primer dato...");
       return;
     }
